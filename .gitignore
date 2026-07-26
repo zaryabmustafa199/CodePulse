@@ -1,0 +1,5 @@
+.venv/
+.ai/
+docs/
+__pycache__/
+*.json
