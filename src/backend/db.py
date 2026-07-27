@@ -15,9 +15,10 @@ DB_PATH = Path("codepulse.db").resolve()
 
 
 def get_connection() -> sqlite3.Connection:
-    """Create a connection to the SQLite database with WAL mode for performance."""
-    conn = sqlite3.connect(str(DB_PATH))
+    """Create a connection to the SQLite database with WAL mode and busy timeout for multi-worker concurrency."""
+    conn = sqlite3.connect(str(DB_PATH), timeout=10.0)
     conn.execute("PRAGMA journal_mode=WAL;")
+    conn.execute("PRAGMA busy_timeout = 5000;")
     conn.row_factory = sqlite3.Row
     return conn
 

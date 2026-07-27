@@ -1,0 +1,21 @@
+version: '3.8'
+
+services:
+  codepulse-backend:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: codepulse_api
+    ports:
+      - "8000:8000"
+    environment:
+      - GEMINI_API_KEY=${GEMINI_API_KEY:-}
+      - PYTHONUNBUFFERED=1
+    volumes:
+      - ./codepulse.db:/app/codepulse.db
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
