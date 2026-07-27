@@ -20,6 +20,7 @@ class Settings:
     DEFAULT_MODEL: str = "gemini-2.5-flash"
     PROMPT_VERSION_OVERVIEW: str = "overview-v1"
     PROMPT_VERSION_CODE_QUALITY: str = "code-quality-v1"
+    PROMPT_VERSION_SECURITY: str = "security-v1"
     
     # Excluded directory & extension patterns
     EXCLUDED_PATHS: set = {

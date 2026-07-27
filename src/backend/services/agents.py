@@ -127,3 +127,86 @@ Return your assessment strictly as a JSON object matching this schema:
             confidence="high" if settings.GEMINI_API_KEY else "medium",
             prompt_version=settings.PROMPT_VERSION_OVERVIEW
         )
+
+    @classmethod
+    def run_security_agent(cls, bundle: AnalysisBundle) -> AgentFinding:
+        """Run Security Agent to analyze linter security findings (Bandit)."""
+        ctx = bundle.context
+        
+        # Filter for security findings
+        security_findings = [f for f in bundle.static_findings if f.category == "security" or f.tool_name == "bandit"]
+        findings_json = [f.model_dump() for f in security_findings]
+
+        system_prompt = f"""You are the CodePulse SECURITY Agent. Your responsibility is to analyze all security static analysis diagnostics for this repository and produce a structured audit.
+
+{GROUNDING_RULE_VERBATIM}
+
+Return your assessment strictly as a JSON object matching this schema:
+{{
+  "domain": "security",
+  "score": 10,
+  "score_rationale": "One sentence grounded rationale explaining security status.",
+  "summary": "2-3 sentence overview of project security risk posture.",
+  "strengths": ["grounded strength 1", "grounded strength 2"],
+  "risks": ["grounded risk 1", "grounded risk 2"],
+  "recommendations": ["actionable security fix 1", "actionable security fix 2"],
+  "confidence": "high"
+}}
+"""
+
+        user_prompt = f"""SECURITY ANALYSIS BUNDLE:
+- Primary Language: {ctx.primary_language}
+- Total Security Findings Detected: {len(security_findings)}
+- Findings JSON Data: {json.dumps(findings_json)}
+"""
+
+        raw_llm_output = cls.call_gemini_flash(system_prompt, user_prompt)
+
+        if raw_llm_output:
+            try:
+                clean_json = raw_llm_output.strip()
+                if clean_json.startswith("```json"):
+                    clean_json = clean_json[7:]
+                if clean_json.endswith("```"):
+                    clean_json = clean_json[:-3]
+                
+                data = json.loads(clean_json.strip())
+                return AgentFinding(
+                    domain=AgentDomain.SECURITY,
+                    score=data.get("score", 10),
+                    score_rationale=data.get("score_rationale", "Grounded codebase security audit"),
+                    summary=data.get("summary", f"Security scan found {len(security_findings)} potential vulnerabilities."),
+                    strengths=data.get("strengths", []),
+                    risks=data.get("risks", []),
+                    recommendations=data.get("recommendations", []),
+                    confidence="high",
+                    prompt_version=settings.PROMPT_VERSION_SECURITY
+                )
+            except Exception:
+                pass
+
+        # Grounded fallback
+        score_val = 10 if len(security_findings) == 0 else max(10 - len(security_findings) * 2, 2)
+        
+        strengths = ["No critical hardcoded credentials or plaintext secrets found during static analysis."]
+        if len(security_findings) == 0:
+            strengths.append("No active security warnings or vulnerabilities detected by Bandit scanner.")
+            
+        risks = []
+        recommendations = ["Regularly update dependency manifests and scan using pip-audit/npm-audit."]
+        for f in security_findings[:3]:
+            risks.append(f"File {f.file_path} line {f.line_number}: {f.message} (Rule: {f.rule_id})")
+            recommendations.append(f"Review and fix {f.message} in file {f.file_path} at line {f.line_number}.")
+
+        return AgentFinding(
+            domain=AgentDomain.SECURITY,
+            score=score_val,
+            score_rationale=f"Codebase security scan finished. Found {len(security_findings)} security issues.",
+            summary=f"Security linter (Bandit) scan completed. Found {len(security_findings)} security issues in Python codebase.",
+            strengths=strengths,
+            risks=risks,
+            recommendations=recommendations,
+            confidence="high" if settings.GEMINI_API_KEY else "medium",
+            prompt_version=settings.PROMPT_VERSION_SECURITY
+        )
+

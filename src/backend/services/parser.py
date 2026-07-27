@@ -156,6 +156,27 @@ class TreeSitterParserService:
 
         return None, True
 
+    def resolve_jsts_import(self, source_rel: str, raw_target: str, manifest: set) -> Tuple[Optional[str], bool]:
+        """Resolve JS/TS import path (supporting extension omission)."""
+        if not raw_target.startswith("."):
+            return None, True  # Third party
+
+        source_dir = Path(source_rel).parent
+        target_path = source_dir / raw_target
+        
+        extensions = [".ts", ".tsx", ".js", ".jsx"]
+        candidates = []
+        for ext in extensions:
+            candidates.append(target_path.with_suffix(ext).as_posix())
+            candidates.append((target_path / f"index{ext}").as_posix())
+            
+        for cand in candidates:
+            norm = os.path.normpath(cand).replace("\\", "/")
+            if norm in manifest:
+                return norm, False
+                
+        return None, False
+
     def parse(self) -> ParsedRepository:
         """Run complete AST parsing and graph extraction pipeline."""
         start_time = time.time()
@@ -207,7 +228,7 @@ class TreeSitterParserService:
                 if ext == ".py":
                     resolved, is_third = self.resolve_python_import(source_rel, target_raw, manifest_set)
                 else:
-                    resolved, is_third = None, True  # Simplified JS fallback for vertical slice
+                    resolved, is_third = self.resolve_jsts_import(source_rel, target_raw, manifest_set)
 
                 is_res = resolved is not None
                 target_str = resolved if is_res else target_raw

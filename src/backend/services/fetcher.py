@@ -35,6 +35,13 @@ class RepositoryFetcher:
         """
         repo_path = Path(repo_path_str).resolve()
 
+        # Prevent root path mapping (e.g., D:\ or C:\)
+        if len(repo_path.parts) <= 1:
+            return RepositoryContext(
+                repository_path=repo_path_str,
+                error="Repository path cannot be the root partition."
+            )
+
         if not repo_path.exists() or not repo_path.is_dir():
             return RepositoryContext(
                 repository_path=repo_path_str,

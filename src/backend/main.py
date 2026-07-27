@@ -74,12 +74,21 @@ async def analyze_repository(request: AnalysisRequest) -> EngineeringReport:
     # 3. Analysis Runner (Ruff)
     bundle = AnalysisRunnerService.create_bundle(context, parsed_repo)
 
-    # 4. LLM Overview Agent Call
+    # 4. LLM Overview & Security Agent Calls
     overview_finding = LLMAgentService.run_overview_agent(bundle)
+    security_finding = LLMAgentService.run_security_agent(bundle)
 
     # 5. Report Consolidation
     total_latency = round(time.time() - start_time, 4)
-    overall_score = overview_finding.score or 8
+    
+    # Calculate average score across Overview and Security agents
+    scores = []
+    if overview_finding.score is not None:
+        scores.append(overview_finding.score)
+    if security_finding.score is not None:
+        scores.append(security_finding.score)
+        
+    overall_score = round(sum(scores) / len(scores)) if scores else 8
     
     # Compute letter grade from score (1-10 scale)
     if overall_score >= 9:
@@ -104,7 +113,8 @@ async def analyze_repository(request: AnalysisRequest) -> EngineeringReport:
         total_files=context.total_files,
         total_lines=context.total_lines,
         domain_findings={
-            AgentDomain.OVERVIEW.value: overview_finding
+            AgentDomain.OVERVIEW.value: overview_finding,
+            AgentDomain.SECURITY.value: security_finding
         }
     )
 
