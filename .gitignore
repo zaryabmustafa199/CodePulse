@@ -4,3 +4,6 @@ docs/
 spikes/
 __pycache__/
 *.json
+codepulse.db*
+.pytest_cache/
+

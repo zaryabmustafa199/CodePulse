@@ -1,6 +1,6 @@
 """
 Analysis Runner Service for CodePulse.
-Executes static analysis tools (Ruff, Bandit, ESLint) via subprocess, parses JSON diagnostics,
+Executes static analysis tools (Ruff, Bandit, ESLint, pip-audit) via subprocess, parses JSON diagnostics,
 and packages RepositoryContext and ParsedRepository into an AnalysisBundle.
 """
 
@@ -13,7 +13,7 @@ from src.backend.models.schemas import RepositoryContext, ParsedRepository, Anal
 
 
 class AnalysisRunnerService:
-    """Service to execute static tools (Ruff, Bandit, ESLint) and construct AnalysisBundle."""
+    """Service to execute static tools (Ruff, Bandit, ESLint, pip-audit) and construct AnalysisBundle."""
 
     @staticmethod
     def run_ruff(repo_path_str: str) -> List[StaticFinding]:
@@ -22,7 +22,6 @@ class AnalysisRunnerService:
         repo_path = Path(repo_path_str).resolve()
 
         try:
-            # Try running local virtual environment ruff first, fallback to system path ruff
             venv_ruff = repo_path.parent / ".venv" / "Scripts" / "ruff"
             cmd_name = str(venv_ruff) if venv_ruff.exists() else "ruff"
             
@@ -62,9 +61,7 @@ class AnalysisRunnerService:
             venv_bandit = repo_path.parent / ".venv" / "Scripts" / "bandit"
             cmd_name = str(venv_bandit) if venv_bandit.exists() else "bandit"
 
-            # Run bandit check with json output format
             cmd = [cmd_name, "-r", str(repo_path), "-f", "json"]
-            # Bandit returns exit code 1 if it finds issues, so we don't check exit code directly
             result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
 
             if result.stdout:
@@ -99,12 +96,10 @@ class AnalysisRunnerService:
         repo_path = Path(repo_path_str).resolve()
 
         try:
-            # Run eslint via npx to support local installations
             cmd = ["npx.cmd" if os.name == "nt" else "npx", "eslint", str(repo_path), "--format=json"]
             result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
 
             stdout_to_parse = result.stdout
-            # If npx has warning output prefix, clean it
             if stdout_to_parse and not stdout_to_parse.strip().startswith("["):
                 idx = stdout_to_parse.find("[")
                 if idx != -1:
@@ -141,6 +136,42 @@ class AnalysisRunnerService:
 
         return findings
 
+    @staticmethod
+    def run_pip_audit(repo_path_str: str) -> List[StaticFinding]:
+        """Run pip-audit with strict 3s timeout for dependency vulnerability checks."""
+        findings: List[StaticFinding] = []
+        repo_path = Path(repo_path_str).resolve()
+
+        req_file = repo_path / "requirements.txt"
+        if not req_file.exists():
+            return findings
+
+        try:
+            venv_audit = repo_path.parent / ".venv" / "Scripts" / "pip-audit"
+            cmd_name = str(venv_audit) if venv_audit.exists() else "pip-audit"
+
+            cmd = [cmd_name, "-r", str(req_file), "-f", "json"]
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=3)
+
+            if result.stdout:
+                raw_json = json.loads(result.stdout)
+                for vulndep in raw_json.get("dependencies", []):
+                    vulns = vulndep.get("vulns", [])
+                    for v in vulns:
+                        findings.append(StaticFinding(
+                            tool_name="pip-audit",
+                            rule_id=v.get("id", "VULN999"),
+                            message=f"Vulnerability in {vulndep.get('name')} {vulndep.get('version')}: {v.get('description', '')}",
+                            file_path="requirements.txt",
+                            line_number=1,
+                            severity="high",
+                            category="dependency"
+                        ))
+        except Exception:
+            pass
+
+        return findings
+
     @classmethod
     def create_bundle(cls, context: RepositoryContext, parsed: ParsedRepository) -> AnalysisBundle:
         """Execute static tool passes based on primary language and construct AnalysisBundle."""
@@ -163,6 +194,14 @@ class AnalysisRunnerService:
                 tool_status["bandit"] = "success"
             except Exception as e:
                 tool_status["bandit"] = f"failed: {str(e)}"
+
+            # Run Pip Audit
+            try:
+                audit_res = cls.run_pip_audit(context.repository_path)
+                findings.extend(audit_res)
+                tool_status["pip_audit"] = "success"
+            except Exception as e:
+                tool_status["pip_audit"] = f"failed: {str(e)}"
         else:
             # Run ESLint
             try:

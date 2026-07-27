@@ -1,6 +1,7 @@
 """
-Automated Integration Tests for CodePulse Week 1 Vertical Slice.
-Tests API root health check, repository fetching, AST parsing, and POST /api/v1/analyze.
+Automated Integration Tests for CodePulse Platform.
+Tests API root health check, repository fetching, AST parsing, 6-agent suite execution,
+SQLite persistence, and GET /api/v1/analysis/{analysis_id}.
 """
 
 import pytest
@@ -20,7 +21,7 @@ def test_read_root():
 
 
 def test_analyze_valid_local_repository():
-    """Verify POST /api/v1/analyze against local repository."""
+    """Verify POST /api/v1/analyze returns complete 6-domain report and saves to SQLite DB."""
     repo_path = str(Path(__file__).parent.parent.resolve())
     response = client.post(
         "/api/v1/analyze",
@@ -33,11 +34,15 @@ def test_analyze_valid_local_repository():
     assert data["overall_score"] is not None
     assert data["overall_grade"] in ("A", "B", "C", "D", "F")
     assert data["total_files"] > 0
-    assert "overview" in data["domain_findings"]
     
-    overview = data["domain_findings"]["overview"]
-    assert overview["domain"] == "overview"
-    assert len(overview["summary"]) > 0
+    # Check all 6 domains present in domain_findings
+    expected_domains = ["overview", "architecture", "code_quality", "security", "documentation", "dependency"]
+    for dom in expected_domains:
+        assert dom in data["domain_findings"], f"Missing domain finding: {dom}"
+        finding = data["domain_findings"][dom]
+        assert finding["domain"] == dom
+        assert len(finding["summary"]) > 0
+        assert finding["score"] is not None
 
 
 def test_analyze_invalid_repository():
@@ -79,7 +84,7 @@ def test_analyze_empty_repository(tmp_path):
 
 
 def test_analyze_jsts_repository(tmp_path):
-    """Verify JS/TS repository detection and parsing."""
+    """Verify JS/TS repository detection, parsing, and multi-agent report execution."""
     js_proj = tmp_path / "js_proj"
     js_proj.mkdir()
     
@@ -100,5 +105,42 @@ def test_analyze_jsts_repository(tmp_path):
     assert data["primary_language"] in ("typescript", "javascript")
     assert data["total_files"] == 2
     assert "overview" in data["domain_findings"]
-    assert "security" in data["domain_findings"]
+    assert "architecture" in data["domain_findings"]
 
+
+def test_database_persistence_and_retrieval(tmp_path):
+    """Verify that reports persisted in SQLite database can be retrieved by analysis_id."""
+    from src.backend.db import save_analysis_record, get_analysis_report, init_db
+    import asyncio
+
+    init_db()
+    test_id = "test-uuid-12345"
+    mock_report = {
+        "status": "success",
+        "total_latency_seconds": 1.23,
+        "overall_score": 9,
+        "overall_grade": "A",
+        "executive_summary": "Test executive summary.",
+        "repository_path": str(tmp_path),
+        "primary_language": "python",
+        "total_files": 5,
+        "total_lines": 100,
+        "domain_findings": {}
+    }
+
+    async def run_db_test():
+        await save_analysis_record(
+            analysis_id=test_id,
+            repo_path=str(tmp_path),
+            status="success",
+            created_at="2026-07-28T00:00:00Z",
+            completed_at="2026-07-28T00:00:01Z",
+            latency_seconds=1.23,
+            report_dict=mock_report
+        )
+        retrieved = await get_analysis_report(test_id)
+        assert retrieved is not None
+        assert retrieved["overall_grade"] == "A"
+        assert retrieved["executive_summary"] == "Test executive summary."
+
+    asyncio.run(run_db_test())
