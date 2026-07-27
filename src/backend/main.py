@@ -24,6 +24,8 @@ from src.backend.services.parser import TreeSitterParserService
 from src.backend.services.runner import AnalysisRunnerService
 from src.backend.services.agents import LLMAgentService
 from src.backend.db import init_db, save_analysis_record, get_analysis_report
+from src.backend.logger import log_event
+from src.backend.middleware.rate_limiter import IPRateLimiterMiddleware
 
 from contextlib import asynccontextmanager
 
@@ -31,6 +33,7 @@ from contextlib import asynccontextmanager
 async def lifespan(app: FastAPI):
     """Initialize database tables at application startup."""
     init_db()
+    log_event("application_startup", status="initialized")
     yield
 
 app = FastAPI(
@@ -40,7 +43,8 @@ app = FastAPI(
     lifespan=lifespan
 )
 
-# Enable CORS
+# Enable Rate Limiting & CORS
+app.add_middleware(IPRateLimiterMiddleware, max_requests=3, window_seconds=3600)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -75,9 +79,12 @@ async def analyze_repository(request: AnalysisRequest) -> EngineeringReport:
     analysis_id = str(uuid4())
     repo_path = request.repository_path.strip()
 
+    log_event("analysis_started", analysis_id=analysis_id, repository_path=repo_path)
+
     # 1. Fetcher & Validation
     context = RepositoryFetcher.fetch_repository(repo_path)
     if context.error:
+        log_event("fetcher_failed", level="error", analysis_id=analysis_id, error=context.error)
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=context.error
@@ -154,6 +161,14 @@ async def analyze_repository(request: AnalysisRequest) -> EngineeringReport:
         completed_at=completed_at,
         latency_seconds=total_latency,
         report_dict=report.model_dump()
+    )
+
+    log_event(
+        "analysis_completed",
+        analysis_id=analysis_id,
+        total_latency_seconds=total_latency,
+        overall_score=overall_score,
+        overall_grade=grade
     )
 
     return report
