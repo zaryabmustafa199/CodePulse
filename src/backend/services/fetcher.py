@@ -5,6 +5,9 @@ and extracts baseline metadata into RepositoryContext.
 """
 
 import os
+import shutil
+import tempfile
+import subprocess
 from pathlib import Path
 from typing import Tuple, List, Optional
 from src.backend.config import settings
@@ -33,20 +36,60 @@ class RepositoryFetcher:
         Validate and inventory a repository at repo_path_str.
         Returns RepositoryContext with metadata or error.
         """
-        repo_path = Path(repo_path_str).resolve()
+        # Check if input is a remote Git/GitHub URL
+        is_remote_url = repo_path_str.startswith(("http://", "https://", "git@")) or "github.com" in repo_path_str
+        temp_dir_obj: Optional[tempfile.TemporaryDirectory] = None
 
-        # Prevent root path mapping (e.g., D:\ or C:\)
-        if len(repo_path.parts) <= 1:
-            return RepositoryContext(
-                repository_path=repo_path_str,
-                error="Repository path cannot be the root partition."
-            )
+        if is_remote_url:
+            try:
+                # Ensure URL is clean
+                clean_url = repo_path_str.strip()
+                temp_dir_obj = tempfile.TemporaryDirectory(prefix="codepulse_git_")
+                target_dir = Path(temp_dir_obj.name)
 
-        if not repo_path.exists() or not repo_path.is_dir():
-            return RepositoryContext(
-                repository_path=repo_path_str,
-                error=f"Repository path does not exist or is not a directory: {repo_path_str}"
-            )
+                # Clone shallowly with 60s timeout
+                result = subprocess.run(
+                    ["git", "clone", "--depth", "1", clean_url, str(target_dir)],
+                    capture_output=True,
+                    text=True,
+                    timeout=60,
+                    check=False
+                )
+
+                if result.returncode != 0:
+                    err_msg = result.stderr.strip() or "Failed to clone remote git repository."
+                    return RepositoryContext(
+                        repository_path=repo_path_str,
+                        error=f"Git clone error: {err_msg}"
+                    )
+
+                repo_path = target_dir
+
+            except subprocess.TimeoutExpired:
+                return RepositoryContext(
+                    repository_path=repo_path_str,
+                    error="Git clone timed out after 60 seconds."
+                )
+            except Exception as e:
+                return RepositoryContext(
+                    repository_path=repo_path_str,
+                    error=f"Failed to clone repository URL: {str(e)}"
+                )
+        else:
+            repo_path = Path(repo_path_str).resolve()
+
+            # Prevent root path mapping (e.g., D:\ or C:\)
+            if len(repo_path.parts) <= 1:
+                return RepositoryContext(
+                    repository_path=repo_path_str,
+                    error="Repository path cannot be the root partition."
+                )
+
+            if not repo_path.exists() or not repo_path.is_dir():
+                return RepositoryContext(
+                    repository_path=repo_path_str,
+                    error=f"Repository path does not exist or is not a directory: {repo_path_str}"
+                )
 
         file_manifest: List[str] = []
         total_lines = 0
@@ -134,8 +177,8 @@ class RepositoryFetcher:
         elif "django" in manifest_str or (dependency_raw and "django" in dependency_raw.lower()):
             framework = Framework.DJANGO
 
-        return RepositoryContext(
-            repository_path=str(repo_path),
+        context = RepositoryContext(
+            repository_path=repo_path_str if is_remote_url else str(repo_path),
             primary_language=primary_lang,
             framework=framework,
             total_files=len(file_manifest),
@@ -144,3 +187,12 @@ class RepositoryFetcher:
             readme_content=readme_content,
             dependency_file_raw=dependency_raw
         )
+
+        # Cleanup temp directory if remote clone
+        if temp_dir_obj:
+            try:
+                temp_dir_obj.cleanup()
+            except Exception:
+                pass
+
+        return context

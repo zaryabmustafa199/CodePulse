@@ -11,7 +11,7 @@ interface HeroInputProps {
   loading: boolean;
 }
 
-const PLACEHOLDER = "D:\\Projects\\PORTFOLIO\\MyRepo";
+const PLACEHOLDER = "https://github.com/owner/repository  or  D:\\Projects\\MyRepo";
 const API_BASE = process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:8000";
 
 export default function HeroInput({ onStart, onSuccess, onError, loading }: HeroInputProps) {
@@ -144,7 +144,7 @@ export default function HeroInput({ onStart, onSuccess, onError, loading }: Hero
 
       {/* Hint */}
       <p style={{ color: "var(--text-subtle)", fontSize: "0.8rem", fontFamily: "var(--font-mono)" }}>
-        Paste an absolute local path to a Python or TypeScript/JavaScript repository
+        Paste a public GitHub repository URL or an absolute local disk path
       </p>
     </div>
   );
