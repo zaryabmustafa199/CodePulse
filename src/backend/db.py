@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Optional, Dict, Any, Tuple
 from datetime import datetime, timezone
 
-DB_PATH = Path("codepulse.db").resolve()
+DB_PATH = Path(__file__).resolve().parent.parent.parent.parent / "codepulse.db"
 
 
 def get_connection() -> sqlite3.Connection:

@@ -104,6 +104,7 @@ class AnalysisRequest(BaseModel):
 
 
 class EngineeringReport(BaseModel):
+    analysis_id: Optional[str] = None
     status: str = "success"
     total_latency_seconds: float = 0.0
     overall_score: Optional[int] = None

@@ -36,6 +36,9 @@ class Settings:
     # LLM Settings
     GEMINI_API_KEY: str = os.getenv("GEMINI_API_KEY", "")
     DEFAULT_MODEL: str = "gemini-2.5-flash"
+    
+    # Development Mode — raises rate limit to 100 for local dev
+    DEV_MODE: bool = os.getenv("DEV_MODE", "false").lower() == "true"
     PROMPT_VERSION_OVERVIEW: str = "overview-v1"
     PROMPT_VERSION_ARCHITECTURE: str = "architecture-v1"
     PROMPT_VERSION_CODE_QUALITY: str = "code-quality-v1"

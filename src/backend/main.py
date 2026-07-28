@@ -33,7 +33,10 @@ from contextlib import asynccontextmanager
 async def lifespan(app: FastAPI):
     """Initialize database tables at application startup."""
     init_db()
-    log_event("application_startup", status="initialized")
+    if settings.DEV_MODE:
+        log_event("application_startup", status="initialized", warning="DEV_MODE=true — rate limit is relaxed to 100 req/hr. Do NOT deploy with this setting.")
+    else:
+        log_event("application_startup", status="initialized")
     yield
 
 app = FastAPI(
@@ -44,10 +47,14 @@ app = FastAPI(
 )
 
 # Enable Rate Limiting & CORS
-app.add_middleware(IPRateLimiterMiddleware, max_requests=3, window_seconds=3600)
+rate_limit_max = 100 if settings.DEV_MODE else 3
+app.add_middleware(IPRateLimiterMiddleware, max_requests=rate_limit_max, window_seconds=3600)
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=[
+        "http://localhost:3000",
+        "http://localhost:3001",
+    ],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -140,6 +147,7 @@ async def analyze_repository(request: AnalysisRequest) -> EngineeringReport:
         grade = "F"
 
     report = EngineeringReport(
+        analysis_id=analysis_id,
         status="success",
         total_latency_seconds=total_latency,
         overall_score=overall_score,

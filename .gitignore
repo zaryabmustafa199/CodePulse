@@ -1,13 +1,24 @@
+# Python
 .venv/
-.ai/
-docs/
-spikes/
-tests/
 __pycache__/
-*.json
-codepulse.db*
 .pytest_cache/
+codepulse.db*
+
+# Dev tools
+.ai/
+.ruff_cache/
+
+# Secrets & env
 .env*
 
+# Docs & spikes (local planning only)
+docs/
+spikes/
 
+# Tests (local only)
+tests/
 
+# Frontend build artifacts
+src/frontend/node_modules/
+src/frontend/.next/
+src/frontend/.env.local
