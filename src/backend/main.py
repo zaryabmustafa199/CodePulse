@@ -183,6 +183,17 @@ async def analyze_repository(request: AnalysisRequest) -> EngineeringReport:
 
 
 @app.get(
+    f"{settings.API_V1_STR}/history",
+    status_code=status.HTTP_200_OK,
+    summary="Retrieve list of recent repository analyses from SQLite database"
+)
+async def get_history(limit: int = 10):
+    """Fetch recent analysis records metadata from SQLite."""
+    from src.backend.db import get_recent_analyses
+    return await get_recent_analyses(limit)
+
+
+@app.get(
     f"{settings.API_V1_STR}/analysis/{{analysis_id}}",
     response_model=EngineeringReport,
     status_code=status.HTTP_200_OK,

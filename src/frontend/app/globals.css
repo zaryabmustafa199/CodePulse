@@ -1,65 +1,90 @@
 @import "tailwindcss";
 
 /* ============================================================
-   CodePulse Design System — "Precision Dark"
-   HSL-based tokens. Derived from implementation_plan.md.
+   CodePulse — Editorial Design System
+   Light-first. Typography-driven. Breathing space.
    ============================================================ */
 
 :root {
-  /* Backgrounds */
-  --bg-base:      #0a0a0f;
-  --bg-surface:   rgba(255, 255, 255, 0.04);
-  --bg-surface-2: rgba(255, 255, 255, 0.07);
-  --bg-hover:     rgba(255, 255, 255, 0.09);
+  --bg:           #fafafa;
+  --bg-raised:    #ffffff;
+  --bg-inset:     #f4f4f5;
+  --bg-code:      #fafaf9;
 
-  /* Borders */
-  --border:       rgba(255, 255, 255, 0.08);
-  --border-hover: rgba(255, 255, 255, 0.16);
+  --text:         #18181b;
+  --text-secondary: #52525b;
+  --text-tertiary:  #a1a1aa;
 
-  /* Text */
-  --text-primary: #e8eaf0;
-  --text-muted:   #6b7280;
-  --text-subtle:  #4b5563;
+  --border:       #e4e4e7;
+  --border-focus: #18181b;
 
-  /* Accent — terminal green */
-  --accent:       hsl(158, 85%, 52%);
-  --accent-dim:   hsla(158, 85%, 52%, 0.12);
-  --accent-glow:  hsla(158, 85%, 52%, 0.25);
+  --accent:       #18181b;
+  --accent-soft:  #f4f4f5;
 
-  /* Severity */
-  --danger:       hsl(4, 90%, 60%);
-  --danger-dim:   hsla(4, 90%, 60%, 0.12);
-  --warn:         hsl(40, 95%, 60%);
-  --warn-dim:     hsla(40, 95%, 60%, 0.12);
-  --success:      hsl(158, 85%, 52%);
+  --green:        #16a34a;
+  --green-bg:     #f0fdf4;
+  --green-border: #bbf7d0;
 
-  /* Grade colors */
-  --grade-a: hsl(158, 85%, 52%);
-  --grade-b: hsl(200, 85%, 55%);
-  --grade-c: hsl(40, 95%, 60%);
-  --grade-d: hsl(20, 90%, 58%);
-  --grade-f: hsl(4, 90%, 60%);
+  --red:          #dc2626;
+  --red-bg:       #fef2f2;
+  --red-border:   #fecaca;
 
-  /* Fonts */
-  --font-sans: var(--font-inter, system-ui, sans-serif);
-  --font-mono: var(--font-jetbrains, "JetBrains Mono", monospace);
+  --amber:        #d97706;
+  --amber-bg:     #fffbeb;
+  --amber-border: #fde68a;
 
-  /* Spacing / Radius */
-  --radius-sm:  6px;
-  --radius-md:  10px;
-  --radius-lg:  16px;
-  --radius-xl:  24px;
+  --blue:         #2563eb;
+  --blue-bg:      #eff6ff;
+  --blue-border:  #bfdbfe;
+
+  --radius:       12px;
+  --radius-sm:    8px;
+  --radius-xs:    6px;
+
+  --font-sans:    var(--font-inter, system-ui, -apple-system, sans-serif);
+  --font-mono:    var(--font-jetbrains, "JetBrains Mono", ui-monospace, monospace);
+
+  --shadow-sm:    0 1px 2px rgba(0,0,0,0.05);
+  --shadow-md:    0 4px 12px rgba(0,0,0,0.08);
+  --shadow-lg:    0 12px 40px rgba(0,0,0,0.12);
+
+  --transition:   200ms cubic-bezier(0.4, 0, 0.2, 1);
 }
 
-/* ============================================================
-   Base Styles
-   ============================================================ */
+[data-theme="dark"] {
+  --bg:           #09090b;
+  --bg-raised:    #18181b;
+  --bg-inset:     #27272a;
+  --bg-code:      #1c1c1e;
 
-* {
-  box-sizing: border-box;
-  margin: 0;
-  padding: 0;
+  --text:         #fafafa;
+  --text-secondary: #a1a1aa;
+  --text-tertiary:  #71717a;
+
+  --border:       #27272a;
+  --border-focus: #fafafa;
+
+  --accent:       #fafafa;
+  --accent-soft:  #27272a;
+
+  --green-bg:     rgba(22, 163, 74, 0.1);
+  --green-border: rgba(22, 163, 74, 0.3);
+
+  --red-bg:       rgba(220, 38, 38, 0.1);
+  --red-border:   rgba(220, 38, 38, 0.3);
+
+  --amber-bg:     rgba(217, 119, 6, 0.1);
+  --amber-border: rgba(217, 119, 6, 0.3);
+
+  --blue-bg:      rgba(37, 99, 235, 0.1);
+  --blue-border:  rgba(37, 99, 235, 0.3);
+
+  --shadow-sm:    0 1px 2px rgba(0,0,0,0.3);
+  --shadow-md:    0 4px 12px rgba(0,0,0,0.4);
+  --shadow-lg:    0 12px 40px rgba(0,0,0,0.5);
 }
+
+* { box-sizing: border-box; margin: 0; padding: 0; }
 
 html {
   font-size: 16px;
@@ -68,176 +93,59 @@ html {
 }
 
 body {
-  background-color: var(--bg-base);
-  color: var(--text-primary);
+  background: var(--bg);
+  color: var(--text);
   font-family: var(--font-sans);
   line-height: 1.6;
   min-height: 100vh;
+  transition: background var(--transition), color var(--transition);
 }
 
-/* ============================================================
-   Glass Card Component
-   ============================================================ */
+/* --- Unique Signature Element: the pulse line --- */
+/* A single thin animated line that breathes across the page */
 
-.glass-card {
-  background: var(--bg-surface);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-lg);
-  backdrop-filter: blur(8px);
-  -webkit-backdrop-filter: blur(8px);
-  transition: border-color 0.2s ease, background 0.2s ease;
+@keyframes pulse-line {
+  0%, 100% { transform: scaleX(0.3); opacity: 0.4; }
+  50% { transform: scaleX(1); opacity: 1; }
 }
 
-.glass-card:hover {
-  border-color: var(--border-hover);
-  background: var(--bg-surface-2);
+.pulse-line {
+  height: 1px;
+  background: linear-gradient(90deg, transparent, var(--text-tertiary), transparent);
+  transform-origin: left center;
+  animation: pulse-line 4s ease-in-out infinite;
 }
 
-/* ============================================================
-   Severity Badges
-   ============================================================ */
-
-.badge {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  padding: 2px 8px;
-  border-radius: 999px;
-  font-size: 0.7rem;
-  font-weight: 600;
-  letter-spacing: 0.05em;
-  text-transform: uppercase;
-  font-family: var(--font-mono);
-}
-
-.badge-high   { background: var(--danger-dim); color: var(--danger); border: 1px solid var(--danger); }
-.badge-medium { background: var(--warn-dim);   color: var(--warn);   border: 1px solid var(--warn); }
-.badge-low    { background: var(--accent-dim); color: var(--accent); border: 1px solid var(--accent); }
-
-/* ============================================================
-   Score ring
-   ============================================================ */
-
-.score-ring {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
+.pulse-line-short {
+  height: 1px;
   width: 48px;
-  height: 48px;
-  border-radius: 50%;
-  font-family: var(--font-mono);
-  font-weight: 700;
-  font-size: 1.1rem;
-  border: 2px solid var(--accent);
-  color: var(--accent);
-  background: var(--accent-dim);
+  background: var(--green);
+  border-radius: 1px;
+  animation: pulse-line 3s ease-in-out infinite;
 }
 
-/* ============================================================
-   Pulse skeleton animation
-   ============================================================ */
+/* --- Loading shimmer --- */
 
-@keyframes pulse-skeleton {
-  0%, 100% { opacity: 0.4; }
-  50%       { opacity: 0.8; }
+@keyframes shimmer {
+  0% { background-position: -200% 0; }
+  100% { background-position: 200% 0; }
 }
 
 .skeleton {
-  background: var(--bg-surface-2);
+  background: linear-gradient(90deg, var(--bg-inset) 25%, var(--border) 50%, var(--bg-inset) 75%);
+  background-size: 200% 100%;
+  animation: shimmer 1.5s ease-in-out infinite;
   border-radius: var(--radius-sm);
-  animation: pulse-skeleton 1.4s ease-in-out infinite;
 }
 
-/* ============================================================
-   Accordion
-   ============================================================ */
-
-details > summary {
-  list-style: none;
-  cursor: pointer;
-}
-details > summary::-webkit-details-marker { display: none; }
-
-/* ============================================================
-   Input
-   ============================================================ */
-
-.cp-input {
-  background: var(--bg-surface);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-md);
-  color: var(--text-primary);
-  font-family: var(--font-mono);
-  font-size: 0.9rem;
-  padding: 12px 16px;
-  width: 100%;
-  outline: none;
-  transition: border-color 0.2s ease, box-shadow 0.2s ease;
-}
-
-.cp-input:focus {
-  border-color: var(--accent);
-  box-shadow: 0 0 0 3px var(--accent-glow);
-}
-
-.cp-input::placeholder {
-  color: var(--text-subtle);
-}
-
-/* ============================================================
-   Buttons
-   ============================================================ */
-
-.cp-btn-primary {
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-  background: var(--accent);
-  color: #0a0a0f;
-  border: none;
-  border-radius: var(--radius-md);
-  font-family: var(--font-mono);
-  font-weight: 700;
-  font-size: 0.875rem;
-  padding: 12px 24px;
-  cursor: pointer;
-  transition: opacity 0.2s ease, transform 0.1s ease;
-  white-space: nowrap;
-}
-
-.cp-btn-primary:hover  { opacity: 0.88; }
-.cp-btn-primary:active { transform: scale(0.98); }
-.cp-btn-primary:disabled {
-  opacity: 0.4;
-  cursor: not-allowed;
-  transform: none;
-}
-
-.cp-btn-ghost {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  background: var(--bg-surface);
-  color: var(--text-muted);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-md);
-  font-family: var(--font-mono);
-  font-size: 0.8rem;
-  padding: 8px 16px;
-  cursor: pointer;
-  transition: all 0.2s ease;
-}
-
-.cp-btn-ghost:hover {
-  border-color: var(--border-hover);
-  color: var(--text-primary);
-}
-
-/* ============================================================
-   Scrollbar
-   ============================================================ */
-
+/* --- Scrollbar --- */
 ::-webkit-scrollbar       { width: 6px; height: 6px; }
 ::-webkit-scrollbar-track { background: transparent; }
 ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
-::-webkit-scrollbar-thumb:hover { background: var(--border-hover); }
+::-webkit-scrollbar-thumb:hover { background: var(--text-tertiary); }
+
+/* --- Selection --- */
+::selection {
+  background: var(--accent);
+  color: var(--bg);
+}

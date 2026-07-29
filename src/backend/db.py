@@ -112,3 +112,23 @@ async def save_analysis_record(
 async def get_analysis_report(analysis_id: str) -> Optional[Dict[str, Any]]:
     """Non-blocking async wrapper to fetch analysis report from SQLite."""
     return await asyncio.to_thread(_get_analysis_report_sync, analysis_id)
+
+
+def _get_recent_analyses_sync(limit: int = 10) -> list[Dict[str, Any]]:
+    """Synchronous worker function to fetch recent analysis metadata from SQLite."""
+    init_db()
+    with get_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT id, repository_path, status, created_at, completed_at, latency_seconds
+            FROM analyses
+            ORDER BY created_at DESC
+            LIMIT ?;
+        """, (limit,))
+        rows = cursor.fetchall()
+        return [dict(r) for r in rows]
+
+
+async def get_recent_analyses(limit: int = 10) -> list[Dict[str, Any]]:
+    """Non-blocking async wrapper to fetch recent analysis history from SQLite."""
+    return await asyncio.to_thread(_get_recent_analyses_sync, limit)
