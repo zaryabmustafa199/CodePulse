@@ -30,27 +30,45 @@ class LLMAgentService:
 
     @staticmethod
     async def call_gemini_flash(system_prompt: str, user_prompt: str) -> Optional[str]:
-        """Invoke Gemini 2.5 Flash model asynchronously via google-genai SDK."""
+        """Invoke Gemini Flash model asynchronously via google-genai SDK with automatic fallback."""
         if os.getenv("TESTING") == "true":
             return None  # Skip external network calls during unit tests
 
-        api_key = settings.GEMINI_API_KEY or os.getenv("GEMINI_API_KEY")
+        api_key = (settings.GEMINI_API_KEY or os.getenv("GEMINI_API_KEY", "")).strip()
         if not api_key:
             return None  # Safe fallback if key is missing
+
+        # Priority model candidates
+        candidates = [settings.DEFAULT_MODEL, "gemini-2.0-flash", "gemini-1.5-flash"]
+        models_to_try = []
+        for m in candidates:
+            if m and m not in models_to_try:
+                models_to_try.append(m)
 
         try:
             from google import genai
             client = genai.Client(api_key=api_key)
-            # Use async generate content if available, or sync call
-            response = client.models.generate_content(
-                model=settings.DEFAULT_MODEL,
-                contents=f"{system_prompt}\n\n{user_prompt}"
-            )
-            return response.text
+
+            for model_name in models_to_try:
+                try:
+                    response = client.models.generate_content(
+                        model=model_name,
+                        contents=f"{system_prompt}\n\n{user_prompt}"
+                    )
+                    if response and response.text:
+                        return response.text
+                except Exception as model_err:
+                    err_s = str(model_err)
+                    if "404" in err_s or "NOT_FOUND" in err_s:
+                        continue  # Try next model candidate
+                    raise model_err
+
         except Exception as e:
             err_str = str(e)
             if "RESOURCE_EXHAUSTED" in err_str or "429" in err_str:
-                print("⚠️ [CodePulse Warning] Gemini API Quota Exhausted (HTTP 429). Falling back to grounded AST/Static analyzer.")
+                print("⚠️ [CodePulse Warning] Gemini API Quota Exhausted (HTTP 429). Verify Google AI Studio API key. Falling back to grounded AST/Static analyzer.")
+            elif "INVALID" in err_str or "400" in err_str or "API_KEY" in err_str:
+                print(f"⚠️ [CodePulse Warning] Invalid Gemini API Key or format. Falling back to grounded AST/Static analyzer.")
             else:
                 print(f"⚠️ [CodePulse Warning] Gemini Call Failed ({err_str[:90]}). Falling back to grounded AST/Static analyzer.")
             return None

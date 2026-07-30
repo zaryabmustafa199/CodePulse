@@ -34,8 +34,8 @@ class Settings:
     MAX_SINGLE_FILE_LINES: int = 2000
     
     # LLM Settings
-    GEMINI_API_KEY: str = os.getenv("GEMINI_API_KEY", "")
-    DEFAULT_MODEL: str = "gemini-2.5-flash"
+    GEMINI_API_KEY: str = os.getenv("GEMINI_API_KEY", "").strip()
+    DEFAULT_MODEL: str = os.getenv("DEFAULT_MODEL", "gemini-2.0-flash").strip()
     
     # Development Mode — raises rate limit to 100 for local dev
     DEV_MODE: bool = os.getenv("DEV_MODE", "false").lower() == "true"
