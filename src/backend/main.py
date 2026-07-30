@@ -105,16 +105,17 @@ async def analyze_repository(request: AnalysisRequest) -> EngineeringReport:
     # 3. Static Tool Runner (Ruff, Bandit, ESLint, pip-audit)
     bundle = AnalysisRunnerService.create_bundle(context, parsed_repo)
 
-    # 4. Run 5 Domain Agents sequentially with slight pacing delay to respect Gemini Free-Tier rate limits
-    arch_res = await LLMAgentService.run_architecture_agent(bundle)
-    await asyncio.sleep(0.3)
-    quality_res = await LLMAgentService.run_code_quality_agent(bundle)
-    await asyncio.sleep(0.3)
-    sec_res = await LLMAgentService.run_security_agent(bundle)
-    await asyncio.sleep(0.3)
-    doc_res = await LLMAgentService.run_documentation_agent(bundle)
-    await asyncio.sleep(0.3)
-    dep_res = await LLMAgentService.run_dependency_agent(bundle)
+    # 4. Run 5 Domain Agents in PARALLEL across two independent providers:
+    #    Gemini   → Architecture, Security        (3 calls/analysis vs 6 before)
+    #    OpenRouter → Code Quality, Documentation, Dependency  (independent quota pool)
+    #    asyncio.gather fires all 5 simultaneously — total time = slowest agent, not sum
+    arch_res, quality_res, sec_res, doc_res, dep_res = await asyncio.gather(
+        LLMAgentService.run_architecture_agent(bundle),
+        LLMAgentService.run_code_quality_agent(bundle),
+        LLMAgentService.run_security_agent(bundle),
+        LLMAgentService.run_documentation_agent(bundle),
+        LLMAgentService.run_dependency_agent(bundle),
+    )
 
     domain_findings = {
         AgentDomain.ARCHITECTURE.value: arch_res,
@@ -124,7 +125,7 @@ async def analyze_repository(request: AnalysisRequest) -> EngineeringReport:
         AgentDomain.DEPENDENCY.value: dep_res,
     }
 
-    # 5. Run Overview Agent Sequentially (passing domain findings context)
+    # 5. Overview Agent runs after domain agents complete (needs their output to synthesize)
     overview_res = await LLMAgentService.run_overview_agent(bundle, domain_findings)
     domain_findings[AgentDomain.OVERVIEW.value] = overview_res
 
@@ -232,22 +233,37 @@ async def analyze_repository_stream(request: AnalysisRequest):
         bundle = AnalysisRunnerService.create_bundle(context, parsed_repo)
 
         domain_findings = {}
-        agents_to_run = [
-            ("architecture", "Auditing module boundaries & circular imports...", LLMAgentService.run_architecture_agent),
-            ("code_quality", "Auditing linter diagnostics & code quality...", LLMAgentService.run_code_quality_agent),
-            ("security", "Auditing security vulnerabilities & risk posture...", LLMAgentService.run_security_agent),
-            ("documentation", "Evaluating README & docstrings coverage...", LLMAgentService.run_documentation_agent),
-            ("dependency", "Auditing third-party package dependencies...", LLMAgentService.run_dependency_agent),
-        ]
 
-        for domain_key, msg, agent_fn in agents_to_run:
+        # 4. Announce all 5 domain agents starting simultaneously, then run in parallel
+        for domain_key, msg in [
+            ("architecture", "Auditing module boundaries & circular imports..."),
+            ("code_quality", "Auditing linter diagnostics & code quality... [OpenRouter]"),
+            ("security", "Auditing security vulnerabilities & risk posture..."),
+            ("documentation", "Evaluating README & docstrings coverage... [OpenRouter]"),
+            ("dependency", "Auditing third-party package dependencies... [OpenRouter]"),
+        ]:
             yield make_sse("domain_start", {"domain": domain_key, "message": msg})
-            finding: AgentFinding = await agent_fn(bundle)
+
+        # Fire all 5 agents in parallel — Gemini handles arch/security, OpenRouter handles quality/docs/deps
+        arch_res, quality_res, sec_res, doc_res, dep_res = await asyncio.gather(
+            LLMAgentService.run_architecture_agent(bundle),
+            LLMAgentService.run_code_quality_agent(bundle),
+            LLMAgentService.run_security_agent(bundle),
+            LLMAgentService.run_documentation_agent(bundle),
+            LLMAgentService.run_dependency_agent(bundle),
+        )
+
+        for domain_key, finding in [
+            ("architecture", arch_res),
+            ("code_quality", quality_res),
+            ("security", sec_res),
+            ("documentation", doc_res),
+            ("dependency", dep_res),
+        ]:
             domain_findings[domain_key] = finding
             yield make_sse("domain_result", {"domain": domain_key, "finding": finding.model_dump()})
-            await asyncio.sleep(0.3)
 
-        # Overview / Manager Agent
+        # Overview agent runs after all domain agents (needs their output to synthesize)
         yield make_sse("domain_start", {"domain": "overview", "message": "Synthesizing master executive summary..."})
         overview_res = await LLMAgentService.run_overview_agent(bundle, domain_findings)
         domain_findings["overview"] = overview_res

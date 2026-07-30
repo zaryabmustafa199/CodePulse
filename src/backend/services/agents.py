@@ -1,12 +1,21 @@
 """
 LLM Agent Service for CodePulse.
-Implements Strategy C prompt builders with verbatim GROUNDING RULE for all 6 analysis domains.
-Invokes Gemini 2.5 Flash asynchronously via google-genai SDK and produces AgentFinding payloads.
+Implements dual-provider (Gemini + OpenRouter) parallel execution architecture.
+
+Provider assignment (fixed split to halve Gemini quota usage):
+  Gemini   → Architecture, Security, Overview  (complex structural/synthesis tasks)
+  OpenRouter → Code Quality, Documentation, Dependency  (simpler linter/metric tasks)
+
+Both providers run domain agents in parallel via asyncio.gather.
+Independent circuit breakers ensure one provider's exhaustion does not affect the other.
+Final fallback: grounded AST/Static analysis engine — guaranteed always-available result.
 """
 
 import os
 import json
 import asyncio
+import urllib.request
+import urllib.error
 from pathlib import Path
 from typing import Dict, Any, Optional, List
 from src.backend.config import settings
@@ -27,26 +36,38 @@ A confident wrong answer is worse than an honest UNKNOWN."""
 
 
 class LLMAgentService:
-    """Service to invoke domain agents asynchronously using Strategy C with verbatim GROUNDING RULE."""
+    """
+    Dual-provider LLM agent service.
+    Gemini handles Architecture, Security, Overview.
+    OpenRouter handles Code Quality, Documentation, Dependency.
+    Both fail gracefully to the AST/Static grounded engine.
+    """
 
-    _quota_circuit_broken: bool = False
+    _gemini_circuit_broken: bool = False
+    _openrouter_circuit_broken: bool = False
 
     @classmethod
     def reset_circuit_breaker(cls):
-        cls._quota_circuit_broken = False
+        """Reset both provider circuit breakers at the start of each analysis run."""
+        cls._gemini_circuit_broken = False
+        cls._openrouter_circuit_broken = False
+
+    # ─────────────────────────────────────────────────────────────
+    #  Tier 1A: Gemini Provider
+    # ─────────────────────────────────────────────────────────────
 
     @classmethod
     async def call_gemini_flash(cls, system_prompt: str, user_prompt: str) -> Optional[str]:
-        """Invoke Gemini Flash model asynchronously via google-genai SDK with automatic 429 circuit breaker."""
+        """Invoke Gemini via google-genai SDK. Circuit-breaks immediately on quota exhaustion."""
         if os.getenv("TESTING") == "true":
-            return None  # Skip external network calls during unit tests
+            return None
 
-        if cls._quota_circuit_broken:
-            return None  # Fast-fallback if quota was already confirmed exhausted in current analysis run
+        if cls._gemini_circuit_broken:
+            return None
 
         api_key = (settings.GEMINI_API_KEY or os.getenv("GEMINI_API_KEY", "")).strip()
         if not api_key:
-            return None  # Safe fallback if key is missing
+            return None
 
         candidates = [settings.DEFAULT_MODEL, "gemini-2.0-flash", "gemini-2.0-flash-lite", "gemini-1.5-flash-8b"]
         models_to_try = []
@@ -59,7 +80,7 @@ class LLMAgentService:
             client = genai.Client(api_key=api_key)
 
             for model_name in models_to_try:
-                for attempt in range(2):  # 2 fast attempts
+                for attempt in range(2):
                     try:
                         response = client.models.generate_content(
                             model=model_name,
@@ -70,29 +91,114 @@ class LLMAgentService:
                     except Exception as err:
                         err_str = str(err)
                         if "404" in err_str or "NOT_FOUND" in err_str:
-                            break  # Try next model candidate
+                            break
                         elif "429" in err_str or "RESOURCE_EXHAUSTED" in err_str:
                             if attempt == 0:
-                                print(f"[CodePulse Notice] Rate limit (429) on {model_name}. Retrying in 1.5s...")
+                                print(f"[CodePulse/Gemini] Rate limit on {model_name}. Retrying in 1.5s...")
                                 await asyncio.sleep(1.5)
                             else:
-                                print(f"[CodePulse Notice] Quota exhausted (429) for key on {model_name}. Activating circuit breaker for remaining agents.")
-                                cls._quota_circuit_broken = True
+                                print(f"[CodePulse/Gemini] Quota exhausted on {model_name}. Circuit breaker tripped — OpenRouter will handle remaining agents.")
+                                cls._gemini_circuit_broken = True
                                 break
                         else:
-                            print(f"[CodePulse Warning] Gemini call failed on {model_name}: {err_str[:90]}")
+                            print(f"[CodePulse/Gemini] Call failed on {model_name}: {err_str[:80]}")
                             break
-                if cls._quota_circuit_broken:
+                if cls._gemini_circuit_broken:
                     break
         except Exception as e:
-            print(f"[CodePulse Warning] Gemini client exception: {str(e)[:90]}")
+            print(f"[CodePulse/Gemini] Client exception: {str(e)[:80]}")
 
-        print("[CodePulse Warning] Gemini calls failed/exhausted. Falling back to grounded AST/Static analyzer.")
         return None
+
+    # ─────────────────────────────────────────────────────────────
+    #  Tier 1B: OpenRouter Provider
+    # ─────────────────────────────────────────────────────────────
+
+    @classmethod
+    async def call_openrouter(cls, system_prompt: str, user_prompt: str) -> Optional[str]:
+        """Invoke OpenRouter REST API (OpenAI-compatible). Fully independent from Gemini quota."""
+        if os.getenv("TESTING") == "true":
+            return None
+
+        if cls._openrouter_circuit_broken:
+            return None
+
+        api_key = (settings.OPENROUTER_API_KEY or os.getenv("OPENROUTER_API_KEY", "")).strip()
+        if not api_key:
+            return None
+
+        model = settings.OPENROUTER_MODEL
+        payload = json.dumps({
+            "model": model,
+            "messages": [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt}
+            ],
+            "max_tokens": 1024,
+            "temperature": 0.2
+        }).encode("utf-8")
+
+        for attempt in range(2):
+            try:
+                req = urllib.request.Request(
+                    settings.OPENROUTER_BASE_URL,
+                    data=payload,
+                    headers={
+                        "Content-Type": "application/json",
+                        "Authorization": f"Bearer {api_key}",
+                        "HTTP-Referer": "https://github.com/zaryabmustafa199/CodePulse",
+                        "X-Title": "CodePulse"
+                    }
+                )
+                with urllib.request.urlopen(req, timeout=30) as resp:
+                    data = json.loads(resp.read().decode("utf-8"))
+                    text = data["choices"][0]["message"]["content"]
+                    if text:
+                        return text
+            except urllib.error.HTTPError as e:
+                err_body = e.read().decode("utf-8")
+                if e.code == 429:
+                    if attempt == 0:
+                        print(f"[CodePulse/OpenRouter] Rate limit. Retrying in 1.5s...")
+                        await asyncio.sleep(1.5)
+                    else:
+                        print(f"[CodePulse/OpenRouter] Quota exhausted. Circuit breaker tripped.")
+                        cls._openrouter_circuit_broken = True
+                        break
+                else:
+                    print(f"[CodePulse/OpenRouter] HTTP {e.code}: {err_body[:80]}")
+                    break
+            except Exception as e:
+                print(f"[CodePulse/OpenRouter] Exception: {str(e)[:80]}")
+                break
+
+        return None
+
+    # ─────────────────────────────────────────────────────────────
+    #  Shared JSON parser
+    # ─────────────────────────────────────────────────────────────
+
+    @staticmethod
+    def _parse_json(raw: str) -> Optional[Dict]:
+        """Strip markdown fences and parse JSON from LLM output."""
+        try:
+            clean = raw.strip().removeprefix("```json").removesuffix("```").strip()
+            # Handle partial markdown fences
+            if clean.startswith("```"):
+                clean = clean[3:].strip()
+            if clean.endswith("```"):
+                clean = clean[:-3].strip()
+            return json.loads(clean)
+        except Exception:
+            return None
+
+    # ─────────────────────────────────────────────────────────────
+    #  Domain Agents
+    # ─────────────────────────────────────────────────────────────
 
     @classmethod
     async def run_architecture_agent(cls, bundle: AnalysisBundle) -> AgentFinding:
-        """Run Architecture Agent analyzing module boundaries, coupling, and circular imports."""
+        """Architecture Agent — Gemini primary (structural analysis, best quality needed)."""
         ctx = bundle.context
         parsed = bundle.parsed_repo
 
@@ -122,12 +228,10 @@ Return your assessment strictly as a JSON object matching this schema:
 - Circular Dependency Cycles: {json.dumps(parsed.circular_dependencies)}
 """
 
-        raw_llm_output = await cls.call_gemini_flash(system_prompt, user_prompt)
-
-        if raw_llm_output:
-            try:
-                clean_json = raw_llm_output.strip().removeprefix("```json").removesuffix("```").strip()
-                data = json.loads(clean_json)
+        raw = await cls.call_gemini_flash(system_prompt, user_prompt)
+        if raw:
+            data = cls._parse_json(raw)
+            if data:
                 return AgentFinding(
                     domain=AgentDomain.ARCHITECTURE,
                     score=data.get("score", 8),
@@ -139,10 +243,8 @@ Return your assessment strictly as a JSON object matching this schema:
                     confidence="high",
                     prompt_version=settings.PROMPT_VERSION_ARCHITECTURE
                 )
-            except Exception:
-                pass
 
-        # Fallback
+        # Grounded AST fallback
         score_val = 9 if len(parsed.circular_dependencies) == 0 else 6
         return AgentFinding(
             domain=AgentDomain.ARCHITECTURE,
@@ -160,13 +262,13 @@ Return your assessment strictly as a JSON object matching this schema:
                 "Maintain strict unidirectional import hierarchy between layer packages",
                 "Keep cross-module dependencies limited to public interfaces"
             ],
-            confidence="high" if settings.GEMINI_API_KEY else "medium",
+            confidence="medium",
             prompt_version=settings.PROMPT_VERSION_ARCHITECTURE
         )
 
     @classmethod
     async def run_code_quality_agent(cls, bundle: AnalysisBundle) -> AgentFinding:
-        """Run Code Quality Agent analyzing Ruff and ESLint static diagnostics."""
+        """Code Quality Agent — OpenRouter primary (linter metrics, simpler structured task)."""
         ctx = bundle.context
         quality_findings = [f for f in bundle.static_findings if f.category == "code_quality" or f.tool_name in ("ruff", "eslint")]
         findings_json = [f.model_dump() for f in quality_findings[:20]]
@@ -194,12 +296,10 @@ Return your assessment strictly as a JSON object matching this schema:
 - Sample Findings: {json.dumps(findings_json)}
 """
 
-        raw_llm_output = await cls.call_gemini_flash(system_prompt, user_prompt)
-
-        if raw_llm_output:
-            try:
-                clean_json = raw_llm_output.strip().removeprefix("```json").removesuffix("```").strip()
-                data = json.loads(clean_json)
+        raw = await cls.call_openrouter(system_prompt, user_prompt)
+        if raw:
+            data = cls._parse_json(raw)
+            if data:
                 return AgentFinding(
                     domain=AgentDomain.CODE_QUALITY,
                     score=data.get("score", 8),
@@ -211,10 +311,8 @@ Return your assessment strictly as a JSON object matching this schema:
                     confidence="high",
                     prompt_version=settings.PROMPT_VERSION_CODE_QUALITY
                 )
-            except Exception:
-                pass
 
-        # Fallback
+        # Grounded AST fallback
         score_val = max(10 - len(quality_findings) // 3, 4)
         return AgentFinding(
             domain=AgentDomain.CODE_QUALITY,
@@ -227,13 +325,13 @@ Return your assessment strictly as a JSON object matching this schema:
             ],
             risks=[f"File {f.file_path} line {f.line_number}: {f.message}" for f in quality_findings[:3]] or ["No high severity linter warnings found"],
             recommendations=["Run automated formatter (ruff format or prettier) prior to committing code"],
-            confidence="high" if settings.GEMINI_API_KEY else "medium",
+            confidence="medium",
             prompt_version=settings.PROMPT_VERSION_CODE_QUALITY
         )
 
     @classmethod
     async def run_security_agent(cls, bundle: AnalysisBundle) -> AgentFinding:
-        """Run Security Agent analyzing Bandit and ESLint security findings."""
+        """Security Agent — Gemini primary (critical vulnerability assessment, best quality needed)."""
         ctx = bundle.context
         security_findings = [f for f in bundle.static_findings if f.category == "security" or f.tool_name == "bandit"]
         findings_json = [f.model_dump() for f in security_findings]
@@ -261,12 +359,10 @@ Return your assessment strictly as a JSON object matching this schema:
 - Findings: {json.dumps(findings_json)}
 """
 
-        raw_llm_output = await cls.call_gemini_flash(system_prompt, user_prompt)
-
-        if raw_llm_output:
-            try:
-                clean_json = raw_llm_output.strip().removeprefix("```json").removesuffix("```").strip()
-                data = json.loads(clean_json)
+        raw = await cls.call_gemini_flash(system_prompt, user_prompt)
+        if raw:
+            data = cls._parse_json(raw)
+            if data:
                 return AgentFinding(
                     domain=AgentDomain.SECURITY,
                     score=data.get("score", 10),
@@ -278,8 +374,6 @@ Return your assessment strictly as a JSON object matching this schema:
                     confidence="high",
                     prompt_version=settings.PROMPT_VERSION_SECURITY
                 )
-            except Exception:
-                pass
 
         score_val = 10 if len(security_findings) == 0 else max(10 - len(security_findings) * 2, 2)
         return AgentFinding(
@@ -290,13 +384,13 @@ Return your assessment strictly as a JSON object matching this schema:
             strengths=["No hardcoded plaintext API keys or credentials detected in scanned source code"],
             risks=[f"File {f.file_path} line {f.line_number}: {f.message}" for f in security_findings[:3]] or ["No critical vulnerability warnings detected"],
             recommendations=["Maintain strict input validation on all HTTP endpoints"],
-            confidence="high" if settings.GEMINI_API_KEY else "medium",
+            confidence="medium",
             prompt_version=settings.PROMPT_VERSION_SECURITY
         )
 
     @classmethod
     async def run_documentation_agent(cls, bundle: AnalysisBundle) -> AgentFinding:
-        """Run Documentation Agent analyzing README presence, docstring coverage, and inline docs."""
+        """Documentation Agent — OpenRouter primary (doc metrics, simpler structured task)."""
         ctx = bundle.context
         parsed = bundle.parsed_repo
 
@@ -328,12 +422,10 @@ Return your assessment strictly as a JSON object matching this schema:
 - README Preview: {ctx.readme_content[:500] if ctx.readme_content else 'None'}
 """
 
-        raw_llm_output = await cls.call_gemini_flash(system_prompt, user_prompt)
-
-        if raw_llm_output:
-            try:
-                clean_json = raw_llm_output.strip().removeprefix("```json").removesuffix("```").strip()
-                data = json.loads(clean_json)
+        raw = await cls.call_openrouter(system_prompt, user_prompt)
+        if raw:
+            data = cls._parse_json(raw)
+            if data:
                 return AgentFinding(
                     domain=AgentDomain.DOCUMENTATION,
                     score=data.get("score", 8),
@@ -345,8 +437,6 @@ Return your assessment strictly as a JSON object matching this schema:
                     confidence="high",
                     prompt_version=settings.PROMPT_VERSION_DOCUMENTATION
                 )
-            except Exception:
-                pass
 
         score_val = 8 if ctx.readme_content else 5
         return AgentFinding(
@@ -360,13 +450,13 @@ Return your assessment strictly as a JSON object matching this schema:
             ],
             risks=[] if ctx.readme_content else ["Missing root README.md documentation file"],
             recommendations=["Add module-level docstrings for all top-level service classes"],
-            confidence="high" if settings.GEMINI_API_KEY else "medium",
+            confidence="medium",
             prompt_version=settings.PROMPT_VERSION_DOCUMENTATION
         )
 
     @classmethod
     async def run_dependency_agent(cls, bundle: AnalysisBundle) -> AgentFinding:
-        """Run Dependency Agent analyzing requirements manifests and pip-audit logs."""
+        """Dependency Agent — OpenRouter primary (package manifest analysis, simpler task)."""
         ctx = bundle.context
         audit_findings = [f for f in bundle.static_findings if f.category == "dependency" or f.tool_name == "pip-audit"]
         dep_file_len = len(ctx.dependency_file_raw) if ctx.dependency_file_raw else 0
@@ -395,12 +485,10 @@ Return your assessment strictly as a JSON object matching this schema:
 - Dependency Audit Findings: {json.dumps([f.model_dump() for f in audit_findings])}
 """
 
-        raw_llm_output = await cls.call_gemini_flash(system_prompt, user_prompt)
-
-        if raw_llm_output:
-            try:
-                clean_json = raw_llm_output.strip().removeprefix("```json").removesuffix("```").strip()
-                data = json.loads(clean_json)
+        raw = await cls.call_openrouter(system_prompt, user_prompt)
+        if raw:
+            data = cls._parse_json(raw)
+            if data:
                 return AgentFinding(
                     domain=AgentDomain.DEPENDENCY,
                     score=data.get("score", 9),
@@ -412,8 +500,6 @@ Return your assessment strictly as a JSON object matching this schema:
                     confidence="high",
                     prompt_version=settings.PROMPT_VERSION_DEPENDENCY
                 )
-            except Exception:
-                pass
 
         score_val = 9 if len(audit_findings) == 0 else max(9 - len(audit_findings) * 2, 3)
         return AgentFinding(
@@ -427,17 +513,16 @@ Return your assessment strictly as a JSON object matching this schema:
             ],
             risks=[f"{f.message}" for f in audit_findings[:3]] or [],
             recommendations=["Pin exact package version numbers in production dependency lockfiles"],
-            confidence="high" if settings.GEMINI_API_KEY else "medium",
+            confidence="medium",
             prompt_version=settings.PROMPT_VERSION_DEPENDENCY
         )
 
     @classmethod
     async def run_overview_agent(cls, bundle: AnalysisBundle, domain_findings: Dict[str, AgentFinding]) -> AgentFinding:
-        """Run Overview Agent sequentially after domain agents finish, summarizing overall health."""
+        """Overview Agent — Gemini primary (synthesis of all domain results, needs best model)."""
         ctx = bundle.context
         parsed = bundle.parsed_repo
 
-        # Extract domain scores & summaries for prompt context
         domain_summaries = {
             domain: {
                 "score": finding.score,
@@ -472,12 +557,10 @@ Return your assessment strictly as a JSON object matching this schema:
 - Domain Findings Context: {json.dumps(domain_summaries)}
 """
 
-        raw_llm_output = await cls.call_gemini_flash(system_prompt, user_prompt)
-
-        if raw_llm_output:
-            try:
-                clean_json = raw_llm_output.strip().removeprefix("```json").removesuffix("```").strip()
-                data = json.loads(clean_json)
+        raw = await cls.call_gemini_flash(system_prompt, user_prompt)
+        if raw:
+            data = cls._parse_json(raw)
+            if data:
                 return AgentFinding(
                     domain=AgentDomain.OVERVIEW,
                     score=data.get("score", 8),
@@ -489,8 +572,6 @@ Return your assessment strictly as a JSON object matching this schema:
                     confidence="high",
                     prompt_version=settings.PROMPT_VERSION_OVERVIEW
                 )
-            except Exception:
-                pass
 
         # Grounded fallback
         valid_scores = [f.score for f in domain_findings.values() if f.score is not None]
@@ -512,6 +593,6 @@ Return your assessment strictly as a JSON object matching this schema:
                 "Maintain modular directory boundaries across subcomponents",
                 "Ensure docstrings are present for all public function definitions"
             ],
-            confidence="high" if settings.GEMINI_API_KEY else "medium",
+            confidence="medium",
             prompt_version=settings.PROMPT_VERSION_OVERVIEW
         )

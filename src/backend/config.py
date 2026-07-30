@@ -27,16 +27,21 @@ class Settings:
     PROJECT_NAME: str = "CodePulse"
     VERSION: str = "0.1.0"
     API_V1_STR: str = "/api/v1"
-    
+
     # Validation Limits (as per INTERFACES.md)
     MAX_LOC_LIMIT: int = 15000
     MAX_FILES_LIMIT: int = 500
     MAX_SINGLE_FILE_LINES: int = 2000
-    
-    # LLM Settings
+
+    # LLM Settings — Gemini (Primary: Architecture, Security, Overview, Dependency)
     GEMINI_API_KEY: str = os.getenv("GEMINI_API_KEY", "").strip()
     DEFAULT_MODEL: str = os.getenv("DEFAULT_MODEL", "gemini-2.0-flash").strip()
-    
+
+    # LLM Settings — OpenRouter (Secondary: Code Quality, Documentation — independent quota pool)
+    OPENROUTER_API_KEY: str = os.getenv("OPENROUTER_API_KEY", "").strip()
+    OPENROUTER_MODEL: str = os.getenv("OPENROUTER_MODEL", "qwen/qwen-2.5-7b-instruct:free").strip()
+    OPENROUTER_BASE_URL: str = "https://openrouter.ai/api/v1/chat/completions"
+
     # Development Mode — raises rate limit to 100 for local dev
     DEV_MODE: bool = os.getenv("DEV_MODE", "false").lower() == "true"
     PROMPT_VERSION_OVERVIEW: str = "overview-v1"
@@ -45,7 +50,7 @@ class Settings:
     PROMPT_VERSION_SECURITY: str = "security-v1"
     PROMPT_VERSION_DOCUMENTATION: str = "documentation-v1"
     PROMPT_VERSION_DEPENDENCY: str = "dependency-v1"
-    
+
     # Excluded directory & extension patterns
     EXCLUDED_PATHS: set = {
         "node_modules", "dist", "build", ".git", "__pycache__", ".venv", "venv", ".idea", ".vscode"
