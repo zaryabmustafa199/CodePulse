@@ -6,6 +6,7 @@ Invokes Gemini 2.5 Flash asynchronously via google-genai SDK and produces AgentF
 
 import os
 import json
+import asyncio
 from pathlib import Path
 from typing import Dict, Any, Optional, List
 from src.backend.config import settings
@@ -30,7 +31,7 @@ class LLMAgentService:
 
     @staticmethod
     async def call_gemini_flash(system_prompt: str, user_prompt: str) -> Optional[str]:
-        """Invoke Gemini Flash model asynchronously via google-genai SDK with automatic fallback."""
+        """Invoke Gemini Flash model asynchronously via google-genai SDK with automatic 429 rate limit retry."""
         if os.getenv("TESTING") == "true":
             return None  # Skip external network calls during unit tests
 
@@ -38,8 +39,7 @@ class LLMAgentService:
         if not api_key:
             return None  # Safe fallback if key is missing
 
-        # Priority model candidates
-        candidates = [settings.DEFAULT_MODEL, "gemini-2.0-flash", "gemini-1.5-flash"]
+        candidates = [settings.DEFAULT_MODEL, "gemini-2.0-flash", "gemini-1.5-flash-8b"]
         models_to_try = []
         for m in candidates:
             if m and m not in models_to_try:
@@ -50,28 +50,30 @@ class LLMAgentService:
             client = genai.Client(api_key=api_key)
 
             for model_name in models_to_try:
-                try:
-                    response = client.models.generate_content(
-                        model=model_name,
-                        contents=f"{system_prompt}\n\n{user_prompt}"
-                    )
-                    if response and response.text:
-                        return response.text
-                except Exception as model_err:
-                    err_s = str(model_err)
-                    if "404" in err_s or "NOT_FOUND" in err_s:
-                        continue  # Try next model candidate
-                    raise model_err
-
+                for attempt in range(3):
+                    try:
+                        response = client.models.generate_content(
+                            model=model_name,
+                            contents=f"{system_prompt}\n\n{user_prompt}"
+                        )
+                        if response and response.text:
+                            return response.text
+                    except Exception as err:
+                        err_str = str(err)
+                        if "404" in err_str or "NOT_FOUND" in err_str:
+                            break  # Try next model candidate
+                        elif "429" in err_str or "RESOURCE_EXHAUSTED" in err_str:
+                            wait_time = (attempt + 1) * 3
+                            print(f"⚠️ [CodePulse Notice] Gemini rate limit (429) on {model_name}. Retrying in {wait_time}s (attempt {attempt + 1}/3)...")
+                            await asyncio.sleep(wait_time)
+                        else:
+                            print(f"⚠️ [CodePulse Warning] Gemini call failed on {model_name}: {err_str[:90]}")
+                            break
         except Exception as e:
-            err_str = str(e)
-            if "RESOURCE_EXHAUSTED" in err_str or "429" in err_str:
-                print("⚠️ [CodePulse Warning] Gemini API Quota Exhausted (HTTP 429). Verify Google AI Studio API key. Falling back to grounded AST/Static analyzer.")
-            elif "INVALID" in err_str or "400" in err_str or "API_KEY" in err_str:
-                print(f"⚠️ [CodePulse Warning] Invalid Gemini API Key or format. Falling back to grounded AST/Static analyzer.")
-            else:
-                print(f"⚠️ [CodePulse Warning] Gemini Call Failed ({err_str[:90]}). Falling back to grounded AST/Static analyzer.")
-            return None
+            print(f"⚠️ [CodePulse Warning] Gemini client exception: {str(e)[:90]}")
+
+        print("⚠️ [CodePulse Warning] Gemini calls failed/exhausted. Falling back to grounded AST/Static analyzer.")
+        return None
 
     @classmethod
     async def run_architecture_agent(cls, bundle: AnalysisBundle) -> AgentFinding:

@@ -104,16 +104,16 @@ async def analyze_repository(request: AnalysisRequest) -> EngineeringReport:
     # 3. Static Tool Runner (Ruff, Bandit, ESLint, pip-audit)
     bundle = AnalysisRunnerService.create_bundle(context, parsed_repo)
 
-    # 4. Run 5 Domain Agents Concurrently (Parallel Execution)
-    arch_task = LLMAgentService.run_architecture_agent(bundle)
-    quality_task = LLMAgentService.run_code_quality_agent(bundle)
-    sec_task = LLMAgentService.run_security_agent(bundle)
-    doc_task = LLMAgentService.run_documentation_agent(bundle)
-    dep_task = LLMAgentService.run_dependency_agent(bundle)
-
-    arch_res, quality_res, sec_res, doc_res, dep_res = await asyncio.gather(
-        arch_task, quality_task, sec_task, doc_task, dep_task
-    )
+    # 4. Run 5 Domain Agents sequentially with slight pacing delay to respect Gemini Free-Tier rate limits
+    arch_res = await LLMAgentService.run_architecture_agent(bundle)
+    await asyncio.sleep(0.3)
+    quality_res = await LLMAgentService.run_code_quality_agent(bundle)
+    await asyncio.sleep(0.3)
+    sec_res = await LLMAgentService.run_security_agent(bundle)
+    await asyncio.sleep(0.3)
+    doc_res = await LLMAgentService.run_documentation_agent(bundle)
+    await asyncio.sleep(0.3)
+    dep_res = await LLMAgentService.run_dependency_agent(bundle)
 
     domain_findings = {
         AgentDomain.ARCHITECTURE.value: arch_res,
