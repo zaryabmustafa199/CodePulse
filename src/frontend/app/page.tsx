@@ -26,6 +26,9 @@ export default function Home() {
   const [theme, setTheme] = useState<"light" | "dark">("light");
   const [repoPath, setRepoPath] = useState("");
   const [loading, setLoading] = useState(false);
+  const [streamStep, setStreamStep] = useState<string>("Initializing pipeline...");
+  const [activeDomainMsg, setActiveDomainMsg] = useState<string>("");
+  const [streamingFindings, setStreamingFindings] = useState<Record<string, AgentFinding>>({});
   const [report, setReport] = useState<EngineeringReport | null>(null);
   const [error, setError] = useState<string | null>(null);
 
@@ -41,9 +44,12 @@ export default function Home() {
     setLoading(true);
     setError(null);
     setReport(null);
+    setStreamingFindings({});
+    setStreamStep("Connecting to real-time analysis stream...");
+    setActiveDomainMsg("");
 
     try {
-      const res = await fetch(`${API_BASE}/api/v1/analyze`, {
+      const res = await fetch(`${API_BASE}/api/v1/analyze/stream`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ repository_path: trimmed }),
@@ -53,19 +59,66 @@ export default function Home() {
         let msg = `Server returned ${res.status}`;
         try { const d = await res.json(); msg = d.detail || msg; } catch {}
         setError(msg);
+        setLoading(false);
         return;
       }
 
-      const data: EngineeringReport = await res.json();
-      if (data.status === "error") {
-        setError(data.executive_summary || "Analysis failed.");
-      } else {
-        setReport(data);
+      if (!res.body) {
+        throw new Error("No response stream available from server.");
+      }
+
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = "";
+
+      while (true) {
+        const { value, done } = await reader.read();
+        if (done) break;
+
+        buffer += decoder.decode(value, { stream: true });
+        const blocks = buffer.split("\n\n");
+        buffer = blocks.pop() || "";
+
+        for (const block of blocks) {
+          if (!block.trim()) continue;
+          let eventType = "message";
+          let dataStr = "";
+
+          for (const line of block.split("\n")) {
+            if (line.startsWith("event: ")) {
+              eventType = line.slice(7).trim();
+            } else if (line.startsWith("data: ")) {
+              dataStr = line.slice(6).trim();
+            }
+          }
+
+          if (!dataStr) continue;
+          try {
+            const parsed = JSON.parse(dataStr);
+            if (eventType === "progress") {
+              setStreamStep(parsed.message || "Processing...");
+            } else if (eventType === "domain_start") {
+              setActiveDomainMsg(parsed.message || `Auditing ${parsed.domain}...`);
+            } else if (eventType === "domain_result") {
+              setStreamingFindings((prev) => ({
+                ...prev,
+                [parsed.domain]: parsed.finding,
+              }));
+            } else if (eventType === "complete") {
+              setReport(parsed as EngineeringReport);
+              setLoading(false);
+            } else if (eventType === "error") {
+              setError(parsed.detail || "Analysis failed.");
+              setLoading(false);
+            }
+          } catch {
+            // Ignore malformed chunks
+          }
+        }
       }
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : "Connection failed";
       setError(`${msg}. Make sure the backend is running on port 8000.`);
-    } finally {
       setLoading(false);
     }
   };
@@ -223,20 +276,41 @@ export default function Home() {
           </div>
         )}
 
-        {/* Loading */}
+        {/* Real-time Streaming Progress Feed & Live Cards */}
         {loading && (
-          <div style={{ marginTop: "2rem", display: "flex", flexDirection: "column", gap: "12px" }}>
-            <div style={{ display: "flex", alignItems: "center", gap: "8px", fontSize: "0.875rem", color: "var(--text-secondary)" }}>
-              <span className="pulse-line-short" />
-              Running analysis pipeline…
+          <div style={{ marginTop: "2rem", display: "flex", flexDirection: "column", gap: "1rem" }}>
+            <div
+              style={{
+                padding: "14px 18px",
+                background: "var(--bg-raised)",
+                border: "1px solid var(--border)",
+                borderRadius: "var(--radius-sm)",
+                display: "flex",
+                flexDirection: "column",
+                gap: "6px",
+              }}
+            >
+              <div style={{ display: "flex", alignItems: "center", gap: "10px", fontSize: "0.875rem", fontWeight: 600, color: "var(--text)" }}>
+                <span className="pulse-indicator" />
+                {streamStep}
+              </div>
+              {activeDomainMsg && (
+                <div style={{ fontSize: "0.8rem", color: "var(--text-tertiary)", fontFamily: "var(--font-mono)", paddingLeft: "18px" }}>
+                  → {activeDomainMsg}
+                </div>
+              )}
             </div>
-            <div className="skeleton" style={{ height: "100px" }} />
-            <div className="skeleton" style={{ height: "60px" }} />
-            <div className="skeleton" style={{ height: "200px" }} />
+
+            {/* Live Streaming Domain Cards */}
+            <div style={{ display: "flex", flexDirection: "column", gap: "12px" }}>
+              {Object.entries(streamingFindings).map(([key, finding]) => (
+                <FindingSection key={key} domain={key} finding={finding} defaultOpen={true} />
+              ))}
+            </div>
           </div>
         )}
 
-        {/* ─── Results ─── */}
+        {/* ─── Completed Master Report ─── */}
         {report && !loading && (
           <div style={{ marginTop: "2.5rem", display: "flex", flexDirection: "column", gap: "2rem", paddingBottom: "3rem" }}>
 
@@ -324,7 +398,7 @@ export default function Home() {
                 .filter(([k]) => k !== "overview")
                 .map(([key, finding]) => {
                   const f = finding as AgentFinding;
-                  return <FindingSection key={key} domain={key} finding={f} />;
+                  return <FindingSection key={key} domain={key} finding={f} defaultOpen={false} />;
                 })}
             </div>
           </div>
@@ -360,8 +434,8 @@ export default function Home() {
 /* ------------------------------------------------------------------ */
 /*  Finding Section (collapsible per domain)                           */
 /* ------------------------------------------------------------------ */
-function FindingSection({ domain, finding }: { domain: string; finding: AgentFinding }) {
-  const [open, setOpen] = useState(false);
+function FindingSection({ domain, finding, defaultOpen = false }: { domain: string; finding: AgentFinding; defaultOpen?: boolean }) {
+  const [open, setOpen] = useState(defaultOpen);
 
   return (
     <div

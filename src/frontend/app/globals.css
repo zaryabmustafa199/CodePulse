@@ -124,6 +124,20 @@ body {
   animation: pulse-line 3s ease-in-out infinite;
 }
 
+@keyframes pulse-dot {
+  0%, 100% { transform: scale(1); opacity: 1; }
+  50% { transform: scale(1.35); opacity: 0.4; }
+}
+
+.pulse-indicator {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--green);
+  animation: pulse-dot 1.5s ease-in-out infinite;
+}
+
 /* --- Loading shimmer --- */
 
 @keyframes shimmer {

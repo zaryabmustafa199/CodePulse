@@ -182,6 +182,129 @@ async def analyze_repository(request: AnalysisRequest) -> EngineeringReport:
     return report
 
 
+@app.post(
+    f"{settings.API_V1_STR}/analyze/stream",
+    summary="Analyze a code repository with real-time Server-Sent Events (SSE) streaming"
+)
+async def analyze_repository_stream(request: AnalysisRequest):
+    """
+    Execute multi-agent analysis pipeline with real-time Server-Sent Events (SSE) streaming.
+    Yields step-by-step progress events, individual domain findings as they finish, and final report JSON.
+    """
+    import json
+    from fastapi.responses import StreamingResponse
+
+    repo_path = request.repository_path.strip()
+
+    async def event_generator():
+        start_time = time.time()
+        created_at = datetime.now(timezone.utc).isoformat()
+        analysis_id = str(uuid4())
+
+        def make_sse(event: str, data: any) -> str:
+            payload = json.dumps(data) if isinstance(data, (dict, list)) else str(data)
+            return f"event: {event}\ndata: {payload}\n\n"
+
+        log_event("analysis_started", analysis_id=analysis_id, repository_path=repo_path)
+        yield make_sse("progress", {"step": "fetching", "message": f"Cloning & scanning repository files..."})
+
+        # 1. Fetcher & Validation
+        context = RepositoryFetcher.fetch_repository(repo_path)
+        if context.error:
+            log_event("fetcher_failed", level="error", analysis_id=analysis_id, error=context.error)
+            yield make_sse("error", {"detail": context.error})
+            return
+
+        yield make_sse("progress", {
+            "step": "parsed_context",
+            "message": f"Repository scanned: {context.total_files} files, {context.total_lines} lines of code ({context.primary_language.value})."
+        })
+
+        # 2. Parser & AST Graph
+        yield make_sse("progress", {"step": "parsing", "message": "Building Tree-sitter AST & import dependency graph..."})
+        parser_service = TreeSitterParserService(context)
+        parsed_repo = parser_service.parse()
+
+        # 3. Static Tool Runner (Ruff, Bandit, ESLint, pip-audit)
+        yield make_sse("progress", {"step": "static_analysis", "message": "Running static diagnostics (Ruff, Bandit, pip-audit)..."})
+        bundle = AnalysisRunnerService.create_bundle(context, parsed_repo)
+
+        domain_findings = {}
+        agents_to_run = [
+            ("architecture", "Auditing module boundaries & circular imports...", LLMAgentService.run_architecture_agent),
+            ("code_quality", "Auditing linter diagnostics & code quality...", LLMAgentService.run_code_quality_agent),
+            ("security", "Auditing security vulnerabilities & risk posture...", LLMAgentService.run_security_agent),
+            ("documentation", "Evaluating README & docstrings coverage...", LLMAgentService.run_documentation_agent),
+            ("dependency", "Auditing third-party package dependencies...", LLMAgentService.run_dependency_agent),
+        ]
+
+        for domain_key, msg, agent_fn in agents_to_run:
+            yield make_sse("domain_start", {"domain": domain_key, "message": msg})
+            finding: AgentFinding = await agent_fn(bundle)
+            domain_findings[domain_key] = finding
+            yield make_sse("domain_result", {"domain": domain_key, "finding": finding.model_dump()})
+            await asyncio.sleep(0.3)
+
+        # Overview / Manager Agent
+        yield make_sse("domain_start", {"domain": "overview", "message": "Synthesizing master executive summary..."})
+        overview_res = await LLMAgentService.run_overview_agent(bundle, domain_findings)
+        domain_findings["overview"] = overview_res
+        yield make_sse("domain_result", {"domain": "overview", "finding": overview_res.model_dump()})
+
+        # Final Report Consolidation
+        total_latency = round(time.time() - start_time, 4)
+        completed_at = datetime.now(timezone.utc).isoformat()
+        valid_scores = [f.score for f in domain_findings.values() if f.score is not None]
+        overall_score = round(sum(valid_scores) / len(valid_scores)) if valid_scores else 8
+
+        if overall_score >= 9:
+            grade = "A"
+        elif overall_score >= 8:
+            grade = "B"
+        elif overall_score >= 7:
+            grade = "C"
+        elif overall_score >= 6:
+            grade = "D"
+        else:
+            grade = "F"
+
+        report = EngineeringReport(
+            analysis_id=analysis_id,
+            status="success",
+            total_latency_seconds=total_latency,
+            overall_score=overall_score,
+            overall_grade=grade,
+            executive_summary=overview_res.summary,
+            repository_path=context.repository_path,
+            primary_language=context.primary_language.value,
+            total_files=context.total_files,
+            total_lines=context.total_lines,
+            domain_findings=domain_findings
+        )
+
+        await save_analysis_record(
+            analysis_id=analysis_id,
+            repo_path=context.repository_path,
+            status="success",
+            created_at=created_at,
+            completed_at=completed_at,
+            latency_seconds=total_latency,
+            report_dict=report.model_dump()
+        )
+
+        log_event(
+            "analysis_completed",
+            analysis_id=analysis_id,
+            total_latency_seconds=total_latency,
+            overall_score=overall_score,
+            overall_grade=grade
+        )
+
+        yield make_sse("complete", report.model_dump())
+
+    return StreamingResponse(event_generator(), media_type="text/event-stream")
+
+
 @app.get(
     f"{settings.API_V1_STR}/history",
     status_code=status.HTTP_200_OK,
