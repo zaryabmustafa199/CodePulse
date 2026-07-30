@@ -29,11 +29,20 @@ A confident wrong answer is worse than an honest UNKNOWN."""
 class LLMAgentService:
     """Service to invoke domain agents asynchronously using Strategy C with verbatim GROUNDING RULE."""
 
-    @staticmethod
-    async def call_gemini_flash(system_prompt: str, user_prompt: str) -> Optional[str]:
-        """Invoke Gemini Flash model asynchronously via google-genai SDK with automatic 429 rate limit retry."""
+    _quota_circuit_broken: bool = False
+
+    @classmethod
+    def reset_circuit_breaker(cls):
+        cls._quota_circuit_broken = False
+
+    @classmethod
+    async def call_gemini_flash(cls, system_prompt: str, user_prompt: str) -> Optional[str]:
+        """Invoke Gemini Flash model asynchronously via google-genai SDK with automatic 429 circuit breaker."""
         if os.getenv("TESTING") == "true":
             return None  # Skip external network calls during unit tests
+
+        if cls._quota_circuit_broken:
+            return None  # Fast-fallback if quota was already confirmed exhausted in current analysis run
 
         api_key = (settings.GEMINI_API_KEY or os.getenv("GEMINI_API_KEY", "")).strip()
         if not api_key:
@@ -50,7 +59,7 @@ class LLMAgentService:
             client = genai.Client(api_key=api_key)
 
             for model_name in models_to_try:
-                for attempt in range(3):
+                for attempt in range(2):  # 2 fast attempts
                     try:
                         response = client.models.generate_content(
                             model=model_name,
@@ -63,16 +72,22 @@ class LLMAgentService:
                         if "404" in err_str or "NOT_FOUND" in err_str:
                             break  # Try next model candidate
                         elif "429" in err_str or "RESOURCE_EXHAUSTED" in err_str:
-                            wait_time = (attempt + 1) * 3
-                            print(f"⚠️ [CodePulse Notice] Gemini rate limit (429) on {model_name}. Retrying in {wait_time}s (attempt {attempt + 1}/3)...")
-                            await asyncio.sleep(wait_time)
+                            if attempt == 0:
+                                print(f"[CodePulse Notice] Rate limit (429) on {model_name}. Retrying in 1.5s...")
+                                await asyncio.sleep(1.5)
+                            else:
+                                print(f"[CodePulse Notice] Quota exhausted (429) for key on {model_name}. Activating circuit breaker for remaining agents.")
+                                cls._quota_circuit_broken = True
+                                break
                         else:
-                            print(f"⚠️ [CodePulse Warning] Gemini call failed on {model_name}: {err_str[:90]}")
+                            print(f"[CodePulse Warning] Gemini call failed on {model_name}: {err_str[:90]}")
                             break
+                if cls._quota_circuit_broken:
+                    break
         except Exception as e:
-            print(f"⚠️ [CodePulse Warning] Gemini client exception: {str(e)[:90]}")
+            print(f"[CodePulse Warning] Gemini client exception: {str(e)[:90]}")
 
-        print("⚠️ [CodePulse Warning] Gemini calls failed/exhausted. Falling back to grounded AST/Static analyzer.")
+        print("[CodePulse Warning] Gemini calls failed/exhausted. Falling back to grounded AST/Static analyzer.")
         return None
 
     @classmethod

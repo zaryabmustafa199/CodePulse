@@ -86,6 +86,7 @@ async def analyze_repository(request: AnalysisRequest) -> EngineeringReport:
     analysis_id = str(uuid4())
     repo_path = request.repository_path.strip()
 
+    LLMAgentService.reset_circuit_breaker()
     log_event("analysis_started", analysis_id=analysis_id, repository_path=repo_path)
 
     # 1. Fetcher & Validation
@@ -201,6 +202,7 @@ async def analyze_repository_stream(request: AnalysisRequest):
         created_at = datetime.now(timezone.utc).isoformat()
         analysis_id = str(uuid4())
 
+        LLMAgentService.reset_circuit_breaker()
         def make_sse(event: str, data: any) -> str:
             payload = json.dumps(data) if isinstance(data, (dict, list)) else str(data)
             return f"event: {event}\ndata: {payload}\n\n"
