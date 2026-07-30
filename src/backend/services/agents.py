@@ -48,7 +48,7 @@ class LLMAgentService:
         if not api_key:
             return None  # Safe fallback if key is missing
 
-        candidates = [settings.DEFAULT_MODEL, "gemini-2.0-flash", "gemini-1.5-flash-8b"]
+        candidates = [settings.DEFAULT_MODEL, "gemini-2.0-flash", "gemini-2.0-flash-lite", "gemini-1.5-flash-8b"]
         models_to_try = []
         for m in candidates:
             if m and m not in models_to_try:
