@@ -37,10 +37,14 @@ class Settings:
     GEMINI_API_KEY: str = os.getenv("GEMINI_API_KEY", "").strip()
     DEFAULT_MODEL: str = os.getenv("DEFAULT_MODEL", "gemini-2.0-flash").strip()
 
-    # LLM Settings — OpenRouter (Secondary: Code Quality, Documentation — independent quota pool)
+    # LLM Settings — OpenRouter (Secondary: Code Quality, Documentation, Dependency — independent quota pool)
     OPENROUTER_API_KEY: str = os.getenv("OPENROUTER_API_KEY", "").strip()
-    OPENROUTER_MODEL: str = os.getenv("OPENROUTER_MODEL", "qwen/qwen-2.5-7b-instruct:free").strip()
+    # Primary free model — verified working as of 2026-08-05
+    OPENROUTER_MODEL: str = os.getenv("OPENROUTER_MODEL", "nvidia/nemotron-3-super-120b-a12b:free").strip()
+    # Fallback free model if primary is unavailable
+    OPENROUTER_FALLBACK_MODEL: str = os.getenv("OPENROUTER_FALLBACK_MODEL", "nvidia/nemotron-3-nano-30b-a3b:free").strip()
     OPENROUTER_BASE_URL: str = "https://openrouter.ai/api/v1/chat/completions"
+
 
     # Development Mode — raises rate limit to 100 for local dev
     DEV_MODE: bool = os.getenv("DEV_MODE", "false").lower() == "true"

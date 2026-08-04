@@ -127,52 +127,67 @@ class LLMAgentService:
         if not api_key:
             return None
 
-        model = settings.OPENROUTER_MODEL
-        payload = json.dumps({
-            "model": model,
-            "messages": [
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_prompt}
-            ],
-            "max_tokens": 1024,
-            "temperature": 0.2
-        }).encode("utf-8")
+        # Try primary model, then fallback model if primary is unavailable
+        models_to_try = []
+        for m in [settings.OPENROUTER_MODEL, settings.OPENROUTER_FALLBACK_MODEL]:
+            if m and m not in models_to_try:
+                models_to_try.append(m)
 
-        for attempt in range(2):
-            try:
-                req = urllib.request.Request(
-                    settings.OPENROUTER_BASE_URL,
-                    data=payload,
-                    headers={
-                        "Content-Type": "application/json",
-                        "Authorization": f"Bearer {api_key}",
-                        "HTTP-Referer": "https://github.com/zaryabmustafa199/CodePulse",
-                        "X-Title": "CodePulse"
-                    }
-                )
-                with urllib.request.urlopen(req, timeout=30) as resp:
-                    data = json.loads(resp.read().decode("utf-8"))
-                    text = data["choices"][0]["message"]["content"]
-                    if text:
-                        return text
-            except urllib.error.HTTPError as e:
-                err_body = e.read().decode("utf-8")
-                if e.code == 429:
-                    if attempt == 0:
-                        print(f"[CodePulse/OpenRouter] Rate limit. Retrying in 1.5s...")
-                        await asyncio.sleep(1.5)
+        for model in models_to_try:
+            payload = json.dumps({
+                "model": model,
+                "messages": [
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_prompt}
+                ],
+                "max_tokens": 1024,
+                "temperature": 0.2
+            }).encode("utf-8")
+
+            for attempt in range(2):
+                try:
+                    req = urllib.request.Request(
+                        settings.OPENROUTER_BASE_URL,
+                        data=payload,
+                        headers={
+                            "Content-Type": "application/json",
+                            "Authorization": f"Bearer {api_key}",
+                            "HTTP-Referer": "https://github.com/zaryabmustafa199/CodePulse",
+                            "X-Title": "CodePulse"
+                        }
+                    )
+                    with urllib.request.urlopen(req, timeout=30) as resp:
+                        data = json.loads(resp.read().decode("utf-8"))
+                        choices = data.get("choices", [])
+                        if choices and choices[0].get("message", {}).get("content"):
+                            return choices[0]["message"]["content"]
+                        else:
+                            print(f"[CodePulse/OpenRouter] Empty response from {model}, trying next.")
+                            break  # Try next model
+                except urllib.error.HTTPError as e:
+                    err_body = e.read().decode("utf-8")
+                    if e.code == 429:
+                        if attempt == 0:
+                            print(f"[CodePulse/OpenRouter] Rate limit on {model}. Retrying in 1.5s...")
+                            await asyncio.sleep(1.5)
+                        else:
+                            print(f"[CodePulse/OpenRouter] Quota exhausted on {model}. Trying fallback...")
+                            break  # Try next model
+                    elif e.code in (400, 404):
+                        print(f"[CodePulse/OpenRouter] Model unavailable {model}: {err_body[:80]}")
+                        break  # Try next model
                     else:
-                        print(f"[CodePulse/OpenRouter] Quota exhausted. Circuit breaker tripped.")
-                        cls._openrouter_circuit_broken = True
+                        print(f"[CodePulse/OpenRouter] HTTP {e.code} on {model}: {err_body[:80]}")
                         break
-                else:
-                    print(f"[CodePulse/OpenRouter] HTTP {e.code}: {err_body[:80]}")
+                except Exception as e:
+                    print(f"[CodePulse/OpenRouter] Exception on {model}: {str(e)[:80]}")
                     break
-            except Exception as e:
-                print(f"[CodePulse/OpenRouter] Exception: {str(e)[:80]}")
-                break
 
+        # All models exhausted
+        cls._openrouter_circuit_broken = True
+        print("[CodePulse/OpenRouter] All models exhausted. Circuit breaker tripped.")
         return None
+
 
     # ─────────────────────────────────────────────────────────────
     #  Shared JSON parser
