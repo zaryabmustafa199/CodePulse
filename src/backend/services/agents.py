@@ -58,7 +58,17 @@ class LLMAgentService:
 
     @classmethod
     async def call_gemini_flash(cls, system_prompt: str, user_prompt: str) -> Optional[str]:
-        """Invoke Gemini via google-genai SDK. Circuit-breaks immediately on quota exhaustion."""
+        """
+        Invoke Gemini via google-genai SDK using the NATIVE ASYNC API (client.aio.models).
+
+        CRITICAL FIX: The previous implementation used client.models.generate_content()
+        which is SYNCHRONOUS and BLOCKS the entire asyncio event loop. When called inside
+        asyncio.gather(), this forced all 3 Gemini agents (Architecture, Security, Overview)
+        to execute SEQUENTIALLY — defeating the entire purpose of parallel execution.
+
+        Fix: client.aio.models.generate_content() is a proper coroutine that yields
+        control to the event loop, allowing all agents to run truly in parallel.
+        """
         if os.getenv("TESTING") == "true":
             return None
 
@@ -82,7 +92,8 @@ class LLMAgentService:
             for model_name in models_to_try:
                 for attempt in range(2):
                     try:
-                        response = client.models.generate_content(
+                        # ASYNC call — yields control to event loop, enables true parallelism
+                        response = await client.aio.models.generate_content(
                             model=model_name,
                             contents=f"{system_prompt}\n\n{user_prompt}"
                         )
@@ -91,13 +102,13 @@ class LLMAgentService:
                     except Exception as err:
                         err_str = str(err)
                         if "404" in err_str or "NOT_FOUND" in err_str:
-                            break
+                            break  # Try next model
                         elif "429" in err_str or "RESOURCE_EXHAUSTED" in err_str:
                             if attempt == 0:
                                 print(f"[CodePulse/Gemini] Rate limit on {model_name}. Retrying in 1.5s...")
                                 await asyncio.sleep(1.5)
                             else:
-                                print(f"[CodePulse/Gemini] Quota exhausted on {model_name}. Circuit breaker tripped — OpenRouter will handle remaining agents.")
+                                print(f"[CodePulse/Gemini] Quota exhausted on {model_name}. Circuit breaker tripped.")
                                 cls._gemini_circuit_broken = True
                                 break
                         else:
@@ -109,6 +120,7 @@ class LLMAgentService:
             print(f"[CodePulse/Gemini] Client exception: {str(e)[:80]}")
 
         return None
+
 
     # ─────────────────────────────────────────────────────────────
     #  Tier 1B: OpenRouter Provider
